@@ -48,7 +48,13 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-4. Optional: Install tree-sitter (if available for your platform):
+4. Make the main parser script executable:
+
+```bash
+chmod +x parse.py
+```
+
+5. Optional: Install tree-sitter (if available for your platform):
 ```bash
 # Try to install tree-sitter (may not work on all platforms)
 pip install tree-sitter
@@ -57,12 +63,10 @@ pip install tree-sitter
 pip install git+https://github.com/tree-sitter/py-tree-sitter.git
 ```
 
-5. Verify installation:
+6. Verify installation:
 ```bash
-# Test the regex-based parser (works without external dependencies)
-python -m parsing.visualization.visualize_simple parsing/samples/sample_header.h
-
-# Or use the convenient parse.py script
+# use the convenient parse.py script (make it executable first)
+chmod +x parse.py
 ./parse.py simple parsing/samples/sample_header.h
 ```
 
@@ -70,7 +74,14 @@ python -m parsing.visualization.visualize_simple parsing/samples/sample_header.h
 
 ### Unified Parser Interface (Recommended)
 
-The project provides a unified interface through the `parse.py` script:
+The project provides a unified interface through the `parse.py` script. Make it executable first:
+
+```bash
+# Make the script executable
+chmod +x parse.py
+```
+
+Then you can use it:
 
 ```bash
 # Show help and available commands
@@ -85,7 +96,7 @@ The project provides a unified interface through the `parse.py` script:
 # Using CAST approach
 ./parse.py cast parsing/samples/sample_header.h
 
-# Using Enhanced Parser
+# Using Enhanced Parser that covers everything
 ./parse.py enhanced parsing/samples/sample_header.h
 
 # Azure AI Search integration
