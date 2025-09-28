@@ -60,14 +60,41 @@ pip install git+https://github.com/tree-sitter/py-tree-sitter.git
 5. Verify installation:
 ```bash
 # Test the regex-based parser (works without external dependencies)
-python parsing/visualize_simple.py parsing/sample_header.h
+python -m parsing.visualization.visualize_simple parsing/samples/sample_header.h
+
+# Or use the convenient parse.py script
+./parse.py simple parsing/samples/sample_header.h
 ```
 
 ## Usage
 
-### Basic Parsing
+### Unified Parser Interface (Recommended)
 
-Parse a header file and visualize the chunks:
+The project provides a unified interface through the `parse.py` script:
+
+```bash
+# Show help and available commands
+./parse.py --help
+
+# Using regex-based parser (no dependencies)
+./parse.py simple parsing/samples/sample_header.h
+
+# Using Tree-sitter based parser
+./parse.py tree-sitter parsing/samples/sample_header.h
+
+# Using CAST approach
+./parse.py cast parsing/samples/sample_header.h
+
+# Using Enhanced Parser
+./parse.py enhanced parsing/samples/sample_header.h
+
+# Azure AI Search integration
+./parse.py azure path/to/headers --azure-endpoint URL --azure-key KEY
+```
+
+### Module-Based Parsing
+
+Alternatively, you can use the Python module structure directly to parse a header file and visualize the chunks:
 
 ```bash
 # Using regex-based parser (no dependencies)
