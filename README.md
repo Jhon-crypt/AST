@@ -12,15 +12,53 @@ This project provides an AST (Abstract Syntax Tree) parser for embedded C softwa
 - Upload chunks to Azure AI Search for RAG applications
 - **NEW**: CAST approach for structure-aware chunking
 
-## Installation
+## Setting Up the Environment
 
+### Prerequisites
+
+- Python 3.8 or higher
+- Git
+- pip (Python package installer)
+
+### Installation
+
+1. Clone the repository:
 ```bash
-# Clone the repository
 git clone https://github.com/yourusername/embedded-c-ast-parser.git
 cd embedded-c-ast-parser
+```
 
-# Install dependencies
+2. Create a virtual environment:
+```bash
+# Create a virtual environment
+python3 -m venv venv
+
+# Activate the virtual environment
+# On macOS/Linux:
+source venv/bin/activate
+# On Windows:
+# venv\Scripts\activate
+```
+
+3. Install dependencies:
+
+For the full functionality including Tree-sitter and CAST:
+```bash
 pip install -r requirements.txt
+```
+
+For minimal installation (regex-based parser only):
+```bash
+# No external dependencies needed for the simple parser
+```
+
+4. Verify installation:
+```bash
+# Test the regex-based parser (works without external dependencies)
+python parsing/visualize_simple.py parsing/sample_header.h
+
+# If you installed full dependencies, test the CAST parser
+python parsing/visualize_cast.py parsing/sample_header.h
 ```
 
 ## Usage
@@ -77,6 +115,40 @@ Options:
 - `--output chunks.json`: Save chunks to a file instead of uploading
 - `--embedding-model model-name`: Specify embedding model
 - `--embedding-dim 1536`: Specify embedding dimension
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Missing Tree-sitter Dependencies**:
+   ```
+   ModuleNotFoundError: No module named 'tree_sitter_language_pack'
+   ```
+   
+   Solution:
+   ```bash
+   pip install tree-sitter tree-sitter-languages
+   ```
+   
+   If that doesn't work, use the regex-based parser:
+   ```bash
+   python parsing/visualize_simple.py parsing/sample_header.h
+   ```
+
+2. **Azure AI Search Connection Issues**:
+   
+   Ensure your Azure credentials are correct and the service is running:
+   ```bash
+   # Test your connection
+   curl -H "api-key: your-admin-key" "https://your-service.search.windows.net/indexes?api-version=2023-07-01-Preview"
+   ```
+
+3. **Large Files Processing**:
+   
+   For very large header files, adjust the chunk size:
+   ```bash
+   python parsing/visualize_cast.py large_header.h --max-chars 4000
+   ```
 
 ## How It Works
 
