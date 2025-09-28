@@ -11,6 +11,7 @@ This project provides an AST (Abstract Syntax Tree) parser for embedded C softwa
 - Generate embeddings for chunks using OpenAI models
 - Upload chunks to Azure AI Search for RAG applications
 - **NEW**: CAST approach for structure-aware chunking
+- **NEW**: Enhanced Parser for both semantic chunking and complete file coverage
 
 ## Setting Up the Environment
 
@@ -42,23 +43,24 @@ source venv/bin/activate
 
 3. Install dependencies:
 
-For the full functionality including Tree-sitter and CAST:
 ```bash
+# Install the basic dependencies
 pip install -r requirements.txt
 ```
 
-For minimal installation (regex-based parser only):
+4. Optional: Install tree-sitter (if available for your platform):
 ```bash
-# No external dependencies needed for the simple parser
+# Try to install tree-sitter (may not work on all platforms)
+pip install tree-sitter
+
+# If you're on a compatible platform, you can try:
+pip install git+https://github.com/tree-sitter/py-tree-sitter.git
 ```
 
-4. Verify installation:
+5. Verify installation:
 ```bash
 # Test the regex-based parser (works without external dependencies)
 python parsing/visualize_simple.py parsing/sample_header.h
-
-# If you installed full dependencies, test the CAST parser
-python parsing/visualize_cast.py parsing/sample_header.h
 ```
 
 ## Usage
@@ -68,14 +70,17 @@ python parsing/visualize_cast.py parsing/sample_header.h
 Parse a header file and visualize the chunks:
 
 ```bash
-# Using Tree-sitter based parser (requires dependencies)
-python parsing/visualize_chunks.py parsing/sample_header.h
-
 # Using regex-based parser (no dependencies)
 python parsing/visualize_simple.py parsing/sample_header.h
 
+# Using Tree-sitter based parser (if tree-sitter is installed)
+python parsing/visualize_chunks.py parsing/sample_header.h
+
 # Using CAST approach (enhanced structure-aware chunking)
 python parsing/visualize_cast.py parsing/sample_header.h
+
+# Using Enhanced Parser (complete file coverage + semantic chunking)
+python parsing/visualize_enhanced.py parsing/sample_header.h
 ```
 
 Options:
@@ -96,6 +101,22 @@ CAST-specific options:
 - `--min-chars 200`: Set minimum characters per chunk
 - `--no-hierarchy`: Ignore hierarchical relationships between code elements
 - `--one-per-symbol`: Create one chunk per symbol instead of using split-then-merge
+
+### Enhanced Parser (NEW)
+
+The Enhanced Parser combines semantic chunking with complete file coverage, capturing both code elements and structural elements:
+
+```bash
+python parsing/visualize_enhanced.py parsing/sample_header.h
+```
+
+Enhanced Parser options:
+- `--max-chars 2000`: Set maximum characters per chunk
+- `--one-per-symbol`: Create one chunk per symbol instead of buffering
+- `--semantic-only`: Only include semantic code elements (functions, structs, etc.)
+- `--no-file-headers`: Exclude file headers from the output
+- `--no-section-headers`: Exclude section headers from the output
+- `--output enhanced_chunks.json`: Save chunks to a JSON file
 
 ### Azure AI Search Integration
 
@@ -120,19 +141,22 @@ Options:
 
 ### Common Issues
 
-1. **Missing Tree-sitter Dependencies**:
+1. **Tree-sitter Installation Issues**:
    ```
-   ModuleNotFoundError: No module named 'tree_sitter_language_pack'
+   ERROR: No matching distribution found for tree-sitter
    ```
    
    Solution:
-   ```bash
-   pip install tree-sitter tree-sitter-languages
-   ```
-   
-   If that doesn't work, use the regex-based parser:
+   - Use the regex-based parser instead, which doesn't require tree-sitter:
    ```bash
    python parsing/visualize_simple.py parsing/sample_header.h
+   ```
+   
+   - For the CAST parser, it will automatically fall back to regex-based parsing if tree-sitter is not available.
+   
+   - The Enhanced Parser is also resilient to tree-sitter not being available and will work without it:
+   ```bash
+   python parsing/visualize_enhanced.py parsing/sample_header.h
    ```
 
 2. **Azure AI Search Connection Issues**:
@@ -147,7 +171,7 @@ Options:
    
    For very large header files, adjust the chunk size:
    ```bash
-   python parsing/visualize_cast.py large_header.h --max-chars 4000
+   python parsing/visualize_simple.py large_header.h --max-chars 4000
    ```
 
 ## How It Works
@@ -159,7 +183,7 @@ This project provides three different parsing approaches:
 1. **Tree-sitter Based Parser** (`c_ast_parser.py`):
    - Uses Tree-sitter to generate an accurate AST
    - Provides robust parsing of complex C constructs
-   - Requires external dependencies
+   - Requires external dependencies (optional)
 
 2. **Regex Based Parser** (`c_ast_parser_simple.py`):
    - Uses regular expressions to extract code elements
@@ -171,6 +195,7 @@ This project provides three different parsing approaches:
    - Implements split-then-merge algorithm
    - Preserves hierarchical relationships
    - Based on the research paper ["CAST: Enhancing Code Retrieval-Augmented Generation with Structural Chunking via Abstract Syntax Tree"](https://arxiv.org/pdf/2506.15655)
+   - Falls back to regex-based parsing if tree-sitter is not available
 
 ### CAST Chunking Process
 
@@ -191,7 +216,7 @@ The CAST approach follows these steps:
 
 ## Project Structure
 
-- `parsing/c_ast_parser.py`: Tree-sitter based AST parser
+- `parsing/c_ast_parser.py`: Tree-sitter based AST parser (optional)
 - `parsing/c_ast_parser_simple.py`: Regex-based parser (no dependencies)
 - `parsing/cast_parser.py`: Enhanced CAST implementation
 - `parsing/azure_indexer.py`: Azure AI Search integration

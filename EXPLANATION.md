@@ -4,7 +4,7 @@ This document provides a detailed explanation of the AST parser implementation f
 
 ## Overview of the Solution
 
-The solution consists of three main approaches:
+The solution consists of four main approaches:
 
 1. **Tree-sitter Based Parser** (`c_ast_parser.py`): A robust solution that uses the Tree-sitter library to generate an Abstract Syntax Tree (AST) from C code. This provides accurate parsing but requires external dependencies.
 
@@ -12,11 +12,15 @@ The solution consists of three main approaches:
 
 3. **CAST Approach** (`cast_parser.py`): An enhanced structure-aware chunking method based on the research paper ["CAST: Enhancing Code Retrieval-Augmented Generation with Structural Chunking via Abstract Syntax Tree"](https://arxiv.org/pdf/2506.15655). This approach provides the most semantically coherent chunks by preserving code structure.
 
+4. **Enhanced Parser** (`enhanced_parser.py`): A comprehensive parser that combines semantic chunking with complete file coverage. It captures both code elements and structural elements like file headers and section comments, providing the best of both worlds.
+
 All implementations follow the same high-level architecture:
 
 1. **Parser**: Extracts code elements (functions, structs, etc.) from the source code
 2. **Chunker**: Groups code elements into meaningful chunks for embedding and retrieval
 3. **Integration**: Provides tools for integrating with Azure AI Search
+
+The Enhanced Parser extends this architecture with additional capabilities for complete file coverage.
 
 ## Key Components
 
@@ -499,9 +503,93 @@ Let's walk through how the CAST parser processes a real embedded C header file:
 
 5. **Output**: The final chunks include both the code content and rich metadata about the contained elements.
 
+## Enhanced Parser
+
+The Enhanced Parser (`enhanced_parser.py`) combines the best aspects of both semantic chunking and complete file coverage. It builds upon the regex-based parser but adds support for file headers, section comments, and other structural elements.
+
+### Key Features
+
+1. **Dual-Mode Operation**:
+   - **Semantic-only mode**: Focuses on extracting meaningful code elements (functions, structs, enums, etc.)
+   - **Complete coverage mode**: Captures both code elements and structural elements like file headers and section comments
+
+2. **Enhanced Pattern Matching**:
+   - Improved regex patterns for complex embedded C constructs
+   - Support for file headers and section headers
+   - Better handling of typedef variations
+
+3. **Flexible Chunking**:
+   - Can create chunks based on semantic units or complete file structure
+   - Preserves documentation context for all elements
+
+### Implementation Details
+
+The Enhanced Parser extends the `RegexBasedCParser` with additional patterns and processing logic:
+
+```python
+class EnhancedCParser(RegexBasedCParser):
+    """Enhanced parser that captures both semantic code elements and file structure elements."""
+    
+    def __init__(self, include_comments: bool = True, max_comment_gap: int = 5, 
+                 include_file_headers: bool = True, include_section_headers: bool = True):
+        super().__init__(include_comments, max_comment_gap)
+        self.include_file_headers = include_file_headers
+        self.include_section_headers = include_section_headers
+        
+        # Enhanced patterns for embedded C specific constructs
+        self.PATTERNS.update({
+            "typedef_struct_named": re.compile(r"typedef\s+struct\s+(\w+)\s*\{[^}]*\}\s*\w+\s*;", re.MULTILINE | re.DOTALL),
+            "typedef_enum_named": re.compile(r"typedef\s+enum\s+(\w+)\s*\{[^}]*\}\s*\w+\s*;", re.MULTILINE | re.DOTALL),
+            # Additional patterns...
+        })
+```
+
+The parser identifies file headers and section comments using specialized regex patterns:
+
+```python
+FILE_HEADER = re.compile(r"(?:/\*\*!(?:.|\n)*?\*/|/\*\*(?:.|\n)*?\*/|//!.*(?:\n//!.*)*)", re.MULTILINE)
+SECTION_HEADER = re.compile(r"(?:^|\n)[ \t]*//[^\n]*(?:=+)[^\n]*(?:\n//[^\n]*)*", re.MULTILINE)
+```
+
+The corresponding chunker (`EnhancedChunker`) provides options to include or exclude these elements:
+
+```python
+class EnhancedChunker(CChunker):
+    def __init__(self, max_chunk_size: int = 1600, chunk_overlap_units: int = 1,
+                 one_symbol_per_chunk: bool = False, include_comments: bool = True,
+                 include_file_headers: bool = True, include_section_headers: bool = True,
+                 semantic_only: bool = False):
+        # ...
+        self.semantic_only = semantic_only
+        
+        # Define which node types are considered "semantic"
+        self.semantic_types = {
+            "function_definition", "declaration", "struct_specifier", "enum_specifier",
+            # Other semantic types...
+        }
+```
+
+### Usage
+
+The Enhanced Parser can be used with different options to suit various needs:
+
+```bash
+# Complete coverage mode (default)
+python parsing/visualize_enhanced.py header_file.h
+
+# Semantic-only mode
+python parsing/visualize_enhanced.py header_file.h --semantic-only
+
+# Exclude file headers
+python parsing/visualize_enhanced.py header_file.h --no-file-headers
+
+# Exclude section headers
+python parsing/visualize_enhanced.py header_file.h --no-section-headers
+```
+
 ## Design Decisions
 
-1. **Multiple Implementations**: Providing Tree-sitter, regex-based, and CAST implementations allows flexibility based on project constraints and needs.
+1. **Multiple Implementations**: Providing Tree-sitter, regex-based, CAST, and Enhanced implementations allows flexibility based on project constraints and needs. Each approach has its own strengths: Tree-sitter for accuracy, regex-based for simplicity, CAST for structure-awareness, and Enhanced for complete coverage.
 
 2. **Comment Association**: Comments are associated with code elements based on proximity, which works well across all parsing approaches.
 
@@ -531,6 +619,6 @@ Let's walk through how the CAST parser processes a real embedded C header file:
 
 ## Conclusion
 
-The implemented AST parser provides a robust solution for extracting and chunking code elements from embedded C header files. The multiple implementation approaches allow flexibility based on project constraints, while the CAST approach provides the most semantically coherent chunks by preserving code structure.
+The implemented AST parser provides a robust solution for extracting and chunking code elements from embedded C header files. The multiple implementation approaches allow flexibility based on project constraints: the CAST approach provides semantically coherent chunks by preserving code structure, while the Enhanced Parser offers the best balance between semantic chunking and complete file coverage.
 
 The parser is designed to be extensible and customizable, allowing it to be adapted for different use cases and requirements. The rich metadata included with each chunk provides valuable context for retrieval and analysis, making it an ideal solution for RAG applications that generate automated test cases for embedded C software.
