@@ -10,6 +10,7 @@ This project provides an AST (Abstract Syntax Tree) parser for embedded C softwa
 - Handle conditional compilation directives (#ifdef, #ifndef, #if)
 - Generate embeddings for chunks using OpenAI models
 - Upload chunks to Azure AI Search for RAG applications
+- **NEW**: CAST approach for structure-aware chunking
 
 ## Installation
 
@@ -29,14 +30,34 @@ pip install -r requirements.txt
 Parse a header file and visualize the chunks:
 
 ```bash
+# Using Tree-sitter based parser (requires dependencies)
 python parsing/visualize_chunks.py parsing/sample_header.h
+
+# Using regex-based parser (no dependencies)
+python parsing/visualize_simple.py parsing/sample_header.h
+
+# Using CAST approach (enhanced structure-aware chunking)
+python parsing/visualize_cast.py parsing/sample_header.h
 ```
 
 Options:
 - `--max-chars 2000`: Set maximum characters per chunk
 - `--one-per-symbol`: Create one chunk per symbol instead of buffering
 - `--output chunks.json`: Save chunks to a JSON file
-- `--plain`: Use plain text output instead of rich formatting
+- `--plain`: Use plain text output instead of rich formatting (for visualize_chunks.py)
+
+### CAST Approach (NEW)
+
+The CAST (Chunking via Abstract Syntax Tree) approach enhances code chunking with structure-aware processing:
+
+```bash
+python parsing/visualize_cast.py parsing/sample_header.h
+```
+
+CAST-specific options:
+- `--min-chars 200`: Set minimum characters per chunk
+- `--no-hierarchy`: Ignore hierarchical relationships between code elements
+- `--one-per-symbol`: Create one chunk per symbol instead of using split-then-merge
 
 ### Azure AI Search Integration
 
@@ -59,21 +80,35 @@ Options:
 
 ## How It Works
 
-### AST Parsing
+### AST Parsing Approaches
 
-The parser uses the Tree-sitter library to generate an Abstract Syntax Tree (AST) from C code. This approach provides several advantages over regex-based parsing:
+This project provides three different parsing approaches:
 
-1. **Structural understanding**: The AST represents the code's structure, making it easier to identify functions, structs, etc.
-2. **Context-aware**: The parser understands C syntax and can correctly handle nested structures.
-3. **Robust**: Works with complex code patterns that would be difficult to parse with regex.
+1. **Tree-sitter Based Parser** (`c_ast_parser.py`):
+   - Uses Tree-sitter to generate an accurate AST
+   - Provides robust parsing of complex C constructs
+   - Requires external dependencies
 
-### Chunking Process
+2. **Regex Based Parser** (`c_ast_parser_simple.py`):
+   - Uses regular expressions to extract code elements
+   - No external dependencies
+   - Simpler but less accurate for complex code
 
-1. **AST Generation**: The code is parsed into an AST using Tree-sitter
-2. **Node Extraction**: The parser traverses the AST to find target nodes (functions, structs, etc.)
-3. **Comment Association**: Doxygen and regular comments are associated with their respective code elements
-4. **Chunk Creation**: Nodes are either emitted as individual chunks or buffered together based on configuration
-5. **Metadata Enrichment**: Each chunk includes metadata about the contained code elements
+3. **CAST Approach** (`cast_parser.py`):
+   - Enhanced structure-aware chunking
+   - Implements split-then-merge algorithm
+   - Preserves hierarchical relationships
+   - Based on the research paper ["CAST: Enhancing Code Retrieval-Augmented Generation with Structural Chunking via Abstract Syntax Tree"](https://arxiv.org/pdf/2506.15655)
+
+### CAST Chunking Process
+
+The CAST approach follows these steps:
+
+1. **Hierarchical Parsing**: Code is parsed into a hierarchical structure that preserves parent-child relationships
+2. **Split Step**: Large nodes are recursively split into smaller chunks that respect syntax boundaries
+3. **Merge Step**: Related nodes are merged together to form semantically coherent chunks
+4. **Context Preservation**: Each chunk maintains its structural context within the codebase
+5. **Metadata Enrichment**: Enhanced metadata includes hierarchical information and context
 
 ### Azure AI Search Integration
 
@@ -84,14 +119,28 @@ The parser uses the Tree-sitter library to generate an Abstract Syntax Tree (AST
 
 ## Project Structure
 
-- `parsing/c_ast_parser.py`: Core AST parser and chunker
+- `parsing/c_ast_parser.py`: Tree-sitter based AST parser
+- `parsing/c_ast_parser_simple.py`: Regex-based parser (no dependencies)
+- `parsing/cast_parser.py`: Enhanced CAST implementation
 - `parsing/azure_indexer.py`: Azure AI Search integration
-- `parsing/visualize_chunks.py`: Tool to visualize parsed chunks
+- `parsing/visualize_chunks.py`: Tool to visualize Tree-sitter parsed chunks
+- `parsing/visualize_simple.py`: Tool to visualize regex-based parsed chunks
+- `parsing/visualize_cast.py`: Tool to visualize CAST chunks
 - `parsing/sample_header.h`: Example header file for testing
 
 ## Customization
 
-You can customize the parser by modifying the `TARGET_TYPES` set in the `EmbeddedCParser` class to include or exclude specific AST node types. The chunking behavior can be adjusted through the `CChunker` parameters.
+You can customize the parsers in several ways:
+
+- Tree-sitter parser: Modify the `TARGET_TYPES` set in the `EmbeddedCParser` class
+- Regex parser: Enhance the `PATTERNS` dictionary in the `RegexBasedCParser` class
+- CAST parser: Adjust the `NODE_HIERARCHY` dictionary to change how nodes are related
+
+## References
+
+The CAST approach is based on research from:
+
+- ["CAST: Enhancing Code Retrieval-Augmented Generation with Structural Chunking via Abstract Syntax Tree"](https://arxiv.org/pdf/2506.15655) (Zhang et al., 2024)
 
 ## License
 
