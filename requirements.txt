@@ -1,8 +1,10 @@
 # Core parsing
 tree-sitter>=0.22,<0.24
-tree-sitter-language-pack>=0.20.0
-# Alternative if language pack not available
-# tree-sitter-languages>=1.7.0
+# Try one of these options for tree-sitter language support
+# Option 1 (preferred if available):
+tree-sitter-language-pack
+# Option 2 (alternative):
+# tree-sitter-languages
 
 # Doxygen helpers (optional but handy)
 beautifulsoup4==4.12.3
