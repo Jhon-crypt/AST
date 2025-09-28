@@ -1,0 +1,20 @@
+# Core parsing
+tree-sitter>=0.22,<0.24
+tree-sitter-language-pack>=0.20.0
+# Alternative if language pack not available
+# tree-sitter-languages>=1.7.0
+
+# Doxygen helpers (optional but handy)
+beautifulsoup4==4.12.3
+markdownify==0.12.1
+
+# Azure AI Search + embeddings
+azure-search-documents>=11.4.0
+azure-core>=1.26.0
+openai>=1,<2
+
+# Visualization
+rich>=13.7
+
+# Local sanity checks (optional)
+scikit-learn>=1.3
