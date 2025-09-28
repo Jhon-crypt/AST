@@ -17,7 +17,7 @@ from dataclasses import dataclass, field, asdict
 from collections import defaultdict
 
 # Import existing code
-from c_ast_parser_simple import (
+from parsing.parsers.c_ast_parser_simple import (
     _sha, _line_offsets, _byte_to_line, _find_nearest_comment,
     _parse_doxygen_comment, ASTNode, RegexBasedCParser, CChunker
 )
@@ -253,7 +253,7 @@ def main():
             print(json.dumps(chunk, ensure_ascii=False))
 
 # Reuse the header file iterator from the original code
-from c_ast_parser_simple import _iter_header_files
+from parsing.parsers.c_ast_parser_simple import _iter_header_files
 
 if __name__ == "__main__":
     main()

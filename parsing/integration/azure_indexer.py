@@ -14,7 +14,11 @@ import pathlib
 from typing import List, Dict, Any
 
 # Import our AST parser
-from c_ast_parser import CChunker
+from parsing.parsers.c_ast_parser import CChunker
+# You can also use other parsers
+# from parsing.parsers.c_ast_parser_simple import CChunker as SimpleCChunker
+# from parsing.parsers.cast_parser import CASTChunker
+# from parsing.parsers.enhanced_parser import EnhancedChunker
 
 # Azure AI Search client
 from azure.search.documents import SearchClient

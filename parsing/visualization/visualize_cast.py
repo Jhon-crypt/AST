@@ -8,7 +8,7 @@ import pathlib
 import sys
 
 # Import our parser
-from cast_parser import CASTChunker
+from parsing.parsers.cast_parser import CASTChunker
 
 def process_file(filepath: str, max_chars: int = 1600, min_chars: int = 200,
                 one_per_symbol: bool = False, respect_hierarchy: bool = True) -> list:

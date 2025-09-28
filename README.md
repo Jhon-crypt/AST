@@ -71,16 +71,16 @@ Parse a header file and visualize the chunks:
 
 ```bash
 # Using regex-based parser (no dependencies)
-python parsing/visualize_simple.py parsing/sample_header.h
+python -m parsing.visualization.visualize_simple parsing/samples/sample_header.h
 
 # Using Tree-sitter based parser (if tree-sitter is installed)
-python parsing/visualize_chunks.py parsing/sample_header.h
+python -m parsing.visualization.visualize_chunks parsing/samples/sample_header.h
 
 # Using CAST approach (enhanced structure-aware chunking)
-python parsing/visualize_cast.py parsing/sample_header.h
+python -m parsing.visualization.visualize_cast parsing/samples/sample_header.h
 
 # Using Enhanced Parser (complete file coverage + semantic chunking)
-python parsing/visualize_enhanced.py parsing/sample_header.h
+python -m parsing.visualization.visualize_enhanced parsing/samples/sample_header.h
 ```
 
 Options:
@@ -94,7 +94,7 @@ Options:
 The CAST (Chunking via Abstract Syntax Tree) approach enhances code chunking with structure-aware processing:
 
 ```bash
-python parsing/visualize_cast.py parsing/sample_header.h
+python -m parsing.visualization.visualize_cast parsing/samples/sample_header.h
 ```
 
 CAST-specific options:
@@ -107,7 +107,7 @@ CAST-specific options:
 The Enhanced Parser combines semantic chunking with complete file coverage, capturing both code elements and structural elements:
 
 ```bash
-python parsing/visualize_enhanced.py parsing/sample_header.h
+python -m parsing.visualization.visualize_enhanced parsing/samples/sample_header.h
 ```
 
 Enhanced Parser options:
@@ -123,7 +123,7 @@ Enhanced Parser options:
 Process headers and upload to Azure AI Search:
 
 ```bash
-python parsing/azure_indexer.py path/to/headers \
+python -m parsing.integration.azure_indexer path/to/headers \
     --azure-endpoint https://your-service.search.windows.net \
     --azure-key your-admin-key \
     --index-name c-code-index \
@@ -149,14 +149,14 @@ Options:
    Solution:
    - Use the regex-based parser instead, which doesn't require tree-sitter:
    ```bash
-   python parsing/visualize_simple.py parsing/sample_header.h
+   python -m parsing.visualization.visualize_simple parsing/samples/sample_header.h
    ```
    
    - For the CAST parser, it will automatically fall back to regex-based parsing if tree-sitter is not available.
    
    - The Enhanced Parser is also resilient to tree-sitter not being available and will work without it:
    ```bash
-   python parsing/visualize_enhanced.py parsing/sample_header.h
+   python -m parsing.visualization.visualize_enhanced parsing/samples/sample_header.h
    ```
 
 2. **Azure AI Search Connection Issues**:

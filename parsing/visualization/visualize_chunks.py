@@ -19,7 +19,7 @@ except ImportError:
     HAS_RICH = False
 
 # Import our parser
-from c_ast_parser import CChunker
+from parsing.parsers.c_ast_parser import CChunker
 
 def process_file(filepath: str, max_chars: int = 1600, one_per_symbol: bool = False) -> List[Dict]:
     """Process a single file and return chunks."""

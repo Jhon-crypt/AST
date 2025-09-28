@@ -129,6 +129,14 @@ class RegexBasedCParser:
         "typedef": re.compile(r"typedef\s+(?:struct|enum|union)?\s*(?:\w+\s+)*(\w+)\s*;", re.MULTILINE),
         "macro_definition": re.compile(r"#define\s+(\w+)(?:\([^)]*\))?\s+[^\n]*", re.MULTILINE),
         "conditional_directive": re.compile(r"#if(?:def|ndef)?\s+([^\n]*)", re.MULTILINE),
+        # New patterns for embedded C specific constructs
+        "typedef_struct": re.compile(r"typedef\s+struct(?:\s+\w+)?\s*\{[^}]*\}\s*(\w+);", re.MULTILINE | re.DOTALL),
+        "typedef_enum": re.compile(r"typedef\s+enum(?:\s+\w+)?\s*\{[^}]*\}\s*(\w+);", re.MULTILINE | re.DOTALL),
+        "typedef_union": re.compile(r"typedef\s+union(?:\s+\w+)?\s*\{[^}]*\}\s*(\w+);", re.MULTILINE | re.DOTALL),
+        # Anonymous typedef struct/enum/union
+        "typedef_anon_struct": re.compile(r"typedef\s+struct\s*\{[^}]*\}\s*(\w+);", re.MULTILINE | re.DOTALL),
+        "typedef_anon_enum": re.compile(r"typedef\s+enum\s*\{[^}]*\}\s*(\w+);", re.MULTILINE | re.DOTALL),
+        "typedef_anon_union": re.compile(r"typedef\s+union\s*\{[^}]*\}\s*(\w+);", re.MULTILINE | re.DOTALL),
     }
     
     def __init__(self, include_comments: bool = True, max_comment_gap: int = 5):
@@ -376,6 +384,43 @@ class RegexBasedCParser:
                 comments=comments
             ))
         
+        # Process typedef struct/enum/union
+        for pattern_name in ["typedef_struct", "typedef_enum", "typedef_union", 
+                            "typedef_anon_struct", "typedef_anon_enum", "typedef_anon_union"]:
+            for match in self.PATTERNS[pattern_name].finditer(source):
+                start_idx = match.start()
+                name = match.group(1)
+                end_idx = match.end()
+                start_line = self._find_line_number(source, start_idx)
+                end_line = self._find_line_number(source, end_idx)
+                
+                code = source[start_idx:end_idx]
+                
+                # Find associated comments
+                doxygen = _find_nearest_comment(source, start_line, DOXYGEN_COMMENT, self.max_comment_gap)
+                if doxygen:
+                    doxygen = _parse_doxygen_comment(doxygen)
+                
+                comments = []
+                if self.include_comments:
+                    comment = _find_nearest_comment(source, start_line, C_COMMENT, self.max_comment_gap)
+                    if comment and (not doxygen or comment["raw"] != doxygen.get("raw")):
+                        comments.append(comment)
+                
+                # Find conditional context
+                parent = conditional_contexts.get(start_line)
+                
+                nodes.append(ASTNode(
+                    type="type_definition",
+                    code=code,
+                    start_line=start_line,
+                    end_line=end_line,
+                    name=name,
+                    parent=parent,
+                    doxygen=doxygen,
+                    comments=comments
+                ))
+        
         # Process macro definitions
         for match in self.PATTERNS["macro_definition"].finditer(source):
             start_idx = match.start()
@@ -607,4 +652,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
