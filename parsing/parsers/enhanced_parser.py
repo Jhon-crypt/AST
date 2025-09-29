@@ -22,11 +22,33 @@ from parsing.parsers.c_ast_parser_simple import (
     _parse_doxygen_comment, ASTNode, RegexBasedCParser, CChunker
 )
 
+from parsing.parsers.cast_parser import CASTNode
+
 # Regular expressions for C code structures
 DOXYGEN_COMMENT = re.compile(r"/\*\*!(?:.|\n)*?\*/|/\*\*(?:.|\n)*?\*/", re.MULTILINE)
 C_COMMENT = re.compile(r"/\*(?:.|\n)*?\*/|//.*?$", re.MULTILINE)
 FILE_HEADER = re.compile(r"(?:/\*\*!(?:.|\n)*?\*/|/\*\*(?:.|\n)*?\*/|//!.*(?:\n//!.*)*)", re.MULTILINE)
 SECTION_HEADER = re.compile(r"(?:^|\n)[ \t]*//[^\n]*(?:=+)[^\n]*(?:\n//[^\n]*)*", re.MULTILINE)
+
+@dataclass
+class EnhancedNode(CASTNode):
+    """
+    Enhanced node with additional properties for complete coverage.
+    """
+    is_structural: bool = False  # Whether this is a structural element (header, section, etc.)
+    
+    def __hash__(self):
+        """Make the node hashable based on its position and type."""
+        return hash((self.start_line, self.end_line, self.type, self.name))
+    
+    def __eq__(self, other):
+        """Equality check for hashing."""
+        if not isinstance(other, EnhancedNode):
+            return False
+        return (self.start_line == other.start_line and 
+                self.end_line == other.end_line and 
+                self.type == other.type and 
+                self.name == other.name)
 
 class EnhancedCParser(RegexBasedCParser):
     """
@@ -60,9 +82,28 @@ class EnhancedCParser(RegexBasedCParser):
             "struct_definition": re.compile(r"struct\s*\{[^}]*\}\s*;", re.MULTILINE | re.DOTALL),
         })
     
-    def parse_source(self, source: str, filepath: Optional[str] = None) -> List[ASTNode]:
+    def parse_source(self, source: str, filepath: Optional[str] = None) -> List[EnhancedNode]:
         """Parse C source code and extract nodes."""
-        nodes = super().parse_source(source, filepath)
+        base_nodes = super().parse_source(source, filepath)
+        
+        # Convert base nodes to EnhancedNodes
+        nodes = []
+        for node in base_nodes:
+            enhanced_node = EnhancedNode(
+                type=node.type,
+                code=node.code,
+                start_line=node.start_line,
+                end_line=node.end_line,
+                name=node.name,
+                parent=node.parent,
+                doxygen=node.doxygen,
+                comments=node.comments,
+                children=[],
+                parent_node=None,
+                depth=0,
+                is_structural=False
+            )
+            nodes.append(enhanced_node)
         
         # Add file header if requested
         if self.include_file_headers:
@@ -75,7 +116,7 @@ class EnhancedCParser(RegexBasedCParser):
                 
                 header_text = source[start_idx:end_idx]
                 
-                nodes.append(ASTNode(
+                nodes.append(EnhancedNode(
                     type="file_header",
                     code=header_text,
                     start_line=start_line,
@@ -83,7 +124,11 @@ class EnhancedCParser(RegexBasedCParser):
                     name=filepath.split('/')[-1] if filepath else None,
                     parent=None,
                     doxygen=None,
-                    comments=[]
+                    comments=[],
+                    children=[],
+                    parent_node=None,
+                    depth=0,
+                    is_structural=True
                 ))
         
         # Add section headers if requested
@@ -102,7 +147,7 @@ class EnhancedCParser(RegexBasedCParser):
                 if name_match:
                     section_name = name_match.group(1).strip()
                 
-                nodes.append(ASTNode(
+                nodes.append(EnhancedNode(
                     type="section_header",
                     code=section_text,
                     start_line=start_line,
@@ -110,17 +155,146 @@ class EnhancedCParser(RegexBasedCParser):
                     name=section_name,
                     parent=None,
                     doxygen=None,
-                    comments=[]
+                    comments=[],
+                    children=[],
+                    parent_node=None,
+                    depth=0,
+                    is_structural=True
                 ))
         
         # Sort nodes by line number
         nodes.sort(key=lambda n: n.start_line)
-        return nodes
+        
+        # Build hierarchy
+        return self._build_hierarchy(nodes)
+
+    def _build_hierarchy(self, nodes: List[EnhancedNode]) -> List[EnhancedNode]:
+        """
+        Build a hierarchical structure of nodes based on their position and scope.
+        
+        This is similar to the CAST approach but adapted for enhanced nodes.
+        """
+        # First, identify preprocessor directive blocks (ifdef/ifndef/if -> endif)
+        preproc_stack = []
+        preproc_blocks = {}
+        
+        # First pass: identify preprocessor blocks
+        for node in sorted(nodes, key=lambda n: n.start_line):
+            if node.type in {"preproc_ifdef", "preproc_ifndef", "preproc_if"}:
+                preproc_stack.append(node)
+            elif node.type == "preproc_endif" and preproc_stack:
+                start_node = preproc_stack.pop()
+                preproc_blocks[start_node] = (start_node.start_line, node.end_line)
+        
+        # Build parent-child relationships
+        root_nodes = []
+        processed_nodes = set()
+        
+        # Process nodes in order of hierarchy level
+        node_hierarchy = {
+            # Preprocessor directives are top-level containers
+            "preproc_ifdef": 0,
+            "preproc_ifndef": 0,
+            "preproc_if": 0,
+            "preproc_else": 0,
+            "preproc_elif": 0,
+            "preproc_endif": 0,
+            # File and section headers
+            "file_header": 0,
+            "section_header": 1,
+            # Type definitions and specifiers
+            "type_definition": 2,
+            "struct_specifier": 2,
+            "enum_specifier": 2,
+            "union_specifier": 2,
+            # Function definitions
+            "function_definition": 3,
+            # Variable declarations
+            "declaration": 4,
+            # Preprocessor macros
+            "preproc_function_def": 5,
+            "preproc_def": 5,
+        }
+        
+        # Sort by hierarchy level first, then by line number
+        sorted_nodes = sorted(nodes, key=lambda n: (node_hierarchy.get(n.type, 99), n.start_line))
+        
+        for node in sorted_nodes:
+            if node in processed_nodes:
+                continue
+                
+            processed_nodes.add(node)
+            
+            # Find potential parent
+            parent = None
+            parent_found = False
+            
+            for potential_parent in sorted_nodes:
+                if potential_parent == node or potential_parent in processed_nodes:
+                    continue
+                    
+                # Check if potential_parent contains this node
+                parent_contains_node = False
+                
+                # Special handling for preprocessor directives
+                if potential_parent.type in {"preproc_ifdef", "preproc_ifndef", "preproc_if"} and potential_parent in preproc_blocks:
+                    start_line, end_line = preproc_blocks[potential_parent]
+                    if start_line < node.start_line and end_line >= node.end_line:
+                        parent_contains_node = True
+                else:
+                    # Regular containment check
+                    if (potential_parent.start_line < node.start_line and 
+                        potential_parent.end_line >= node.end_line):
+                        parent_contains_node = True
+                
+                if parent_contains_node:
+                    # Find the closest parent
+                    if not parent_found or (
+                        node.parent_node and
+                        parent.start_line > node.parent_node.start_line and
+                        parent.end_line <= node.parent_node.end_line
+                    ):
+                        parent = potential_parent
+                        parent_found = True
+            
+            if parent_found:
+                parent.add_child(node)
+            else:
+                root_nodes.append(node)
+        
+        # Return only root nodes, children are accessible through the hierarchy
+        return sorted(root_nodes, key=lambda n: n.start_line)
 
 class EnhancedChunker(CChunker):
     """
     Enhanced chunker that provides both semantic chunking and complete coverage.
     """
+    
+    def _emit_chunk(self, nodes, content, filepath=None):
+        """Create a chunk from the given nodes and content."""
+        first_node = nodes[0]
+        
+        metadata = {
+            "language": "c",
+            "filepath": filepath or "",
+            "chunk_units": [
+                {
+                    "type": n.type,
+                    "start": n.start_line,
+                    "end": n.end_line,
+                    "name": n.name,
+                    "depth": n.depth,
+                    "context": n.get_full_context()
+                } for n in nodes
+            ],
+            "conditional_context": [n.parent for n in nodes if n.parent]
+        }
+        
+        return {
+            "id": _sha(filepath, first_node.start_line, first_node.end_line),
+            "content": content,
+            "metadata": metadata
+        }
     
     def __init__(self, max_chunk_size: int = 1600, chunk_overlap_units: int = 1,
                  one_symbol_per_chunk: bool = False, include_comments: bool = True,
