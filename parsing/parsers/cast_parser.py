@@ -34,17 +34,25 @@ C_COMMENT = re.compile(r"/\*(?:.|\n)*?\*/|//.*?$", re.MULTILINE)
 
 # Node types ordered by hierarchy level (used for merging related nodes)
 NODE_HIERARCHY = {
+    # Preprocessor directives are top-level containers
     "preproc_ifdef": 0,
     "preproc_ifndef": 0,
     "preproc_if": 0,
-    "struct_specifier": 1,
-    "enum_specifier": 1,
-    "union_specifier": 1,
-    "type_definition": 2,
+    "preproc_else": 0,
+    "preproc_elif": 0,
+    "preproc_endif": 0,
+    # Type definitions and specifiers
+    "type_definition": 1,  # Typedef is highest in type hierarchy
+    "struct_specifier": 2,
+    "enum_specifier": 2,
+    "union_specifier": 2,
+    # Function definitions
     "function_definition": 3,
+    # Variable declarations
     "declaration": 4,
+    # Preprocessor macros
     "preproc_function_def": 5,
-    "preproc_def": 6,
+    "preproc_def": 5,
 }
 
 @dataclass
@@ -55,6 +63,19 @@ class CASTNode(ASTNode):
     children: List["CASTNode"] = field(default_factory=list)
     parent_node: Optional["CASTNode"] = None
     depth: int = 0
+    
+    def __hash__(self):
+        """Make the node hashable based on its position and type."""
+        return hash((self.start_line, self.end_line, self.type, self.name))
+    
+    def __eq__(self, other):
+        """Equality check for hashing."""
+        if not isinstance(other, CASTNode):
+            return False
+        return (self.start_line == other.start_line and 
+                self.end_line == other.end_line and 
+                self.type == other.type and 
+                self.name == other.name)
     
     def add_child(self, child: "CASTNode") -> None:
         """Add a child node."""
@@ -104,7 +125,32 @@ class CASTParser(RegexBasedCParser):
         This implements the core of the CAST approach by establishing parent-child
         relationships between nodes based on their structural relationships.
         """
+        # First, identify preprocessor directive blocks (ifdef/ifndef/if -> endif)
+        preproc_stack = []
+        preproc_blocks = {}
+        
+        # First pass: identify preprocessor blocks
+        for node in sorted(nodes, key=lambda n: n.start_line):
+            if node.type in {"preproc_ifdef", "preproc_ifndef", "preproc_if"}:
+                preproc_stack.append(node)
+            elif node.type == "preproc_endif" and preproc_stack:
+                start_node = preproc_stack.pop()
+                preproc_blocks[start_node] = (start_node.start_line, node.end_line)
+        
+        # Second pass: identify struct/enum hierarchy
+        # For example, a typedef struct might contain nested structs
+        struct_hierarchy = {}
+        for node in nodes:
+            if node.type in {"type_definition", "struct_specifier", "enum_specifier", "union_specifier"}:
+                for potential_child in nodes:
+                    if potential_child != node and \
+                       potential_child.start_line > node.start_line and \
+                       potential_child.end_line < node.end_line and \
+                       potential_child.type in {"struct_specifier", "enum_specifier", "union_specifier"}:
+                        struct_hierarchy[potential_child] = node
+        
         # Sort nodes by start line and then by hierarchy level (containers first)
+        # We need to process preprocessor directives first as they can contain other elements
         nodes.sort(key=lambda n: (n.start_line, NODE_HIERARCHY.get(n.type, 99)))
         
         # Find potential parent-child relationships
@@ -120,12 +166,25 @@ class CASTParser(RegexBasedCParser):
                     continue
                     
                 # Check if parent contains this node
-                if (parent.start_line < node.start_line and 
-                    parent.end_line >= node.end_line and
-                    NODE_HIERARCHY.get(parent.type, 99) < NODE_HIERARCHY.get(node.type, 99)):
+                parent_contains_node = False
+                
+                # Special handling for preprocessor directives
+                if parent.type in {"preproc_ifdef", "preproc_ifndef", "preproc_if"} and parent in preproc_blocks:
+                    start_line, end_line = preproc_blocks[parent]
+                    if start_line < node.start_line and end_line >= node.end_line:
+                        parent_contains_node = True
+                # Special handling for struct hierarchy
+                elif node in struct_hierarchy and struct_hierarchy[node] == parent:
+                    parent_contains_node = True
+                # Normal containment check
+                elif parent.start_line < node.start_line and parent.end_line >= node.end_line:
+                    parent_contains_node = True
+                    
+                if parent_contains_node:
                     
                     # Find the closest parent
                     if not parent_found or (
+                        node.parent_node and
                         parent.start_line > node.parent_node.start_line and
                         parent.end_line <= node.parent_node.end_line
                     ):
@@ -161,6 +220,15 @@ class CASTParser(RegexBasedCParser):
         
         # Build hierarchy
         root_nodes = self._build_hierarchy(cast_nodes)
+        
+        # Update depths based on hierarchy
+        def _update_depths(node, depth=0):
+            node.depth = depth
+            for child in node.children:
+                _update_depths(child, depth + 1)
+        
+        for root in root_nodes:
+            _update_depths(root)
         
         # Flatten back to a list for compatibility with existing code
         flattened = []
@@ -383,9 +451,13 @@ class CASTChunker:
         """Create a chunk from the given nodes and content."""
         first_node = nodes[0]
         
+        # Get the maximum depth of any node in this chunk
+        max_depth = max((n.depth for n in nodes), default=0)
+        
         metadata = {
             "language": "c",
             "filepath": filepath or "",
+            "depth": max_depth,  # Add overall depth to the metadata
             "chunk_units": [
                 {
                     "type": n.type,
