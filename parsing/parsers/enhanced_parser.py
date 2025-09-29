@@ -394,12 +394,22 @@ class EnhancedCParser(RegexBasedCParser):
             if node.type in {"type_definition", "struct_specifier", "enum_specifier", "union_specifier"}:
                 # Check if this node is inside a FUNCBLOCK
                 parent = node.parent_node
+                funcblock_depth = 0
+                nesting_level = 0
                 while parent:
+                    # Count nesting levels for each container type
+                    if parent.type in {"struct_specifier", "enum_specifier", "union_specifier"}:
+                        nesting_level += 1
+                    
+                    # Special case for FUNCBLOCK
                     if parent.type == "preproc_def" and parent.name == "__FUNCBLOCK__":
                         # Nodes inside FUNCBLOCK should have depth at least 2
-                        node.depth = max(node.depth, 2)
+                        funcblock_depth = 2
                         break
                     parent = parent.parent_node
+                
+                # Use the maximum depth from hierarchy, FUNCBLOCK, and nesting
+                node.depth = max(node.depth, funcblock_depth, nesting_level)
             
             # Recurse to children with incremented depth
             if node.children:
@@ -662,15 +672,14 @@ class EnhancedChunker(CChunker):
                     # Calculate depth based on nesting level
                     nested_depth = 0
                     if len(struct_matches) > 1 or len(enum_matches) > 1 or len(union_matches) > 1:
-                        # If there are nested declarations, set depth based on position
-                        for i, match in enumerate(sorted(struct_matches + enum_matches + union_matches, 
-                                                        key=lambda m: m.start())):
-                            if i == 0 and node.name and node.name in match.group(0):
-                                # This is the node itself
-                                pass
-                            else:
-                                # This is a nested declaration
-                                nested_depth = max(nested_depth, 1)
+                        # Count the number of nested declarations
+                        all_matches = sorted(struct_matches + enum_matches + union_matches, 
+                                           key=lambda m: m.start())
+                        
+                        # The depth is based on the number of nested declarations
+                        # First one is the container itself, so subtract 1
+                        nested_count = len(all_matches) - 1
+                        nested_depth = max(nested_depth, nested_count)
                     
                     # Check for FUNCBLOCK pattern (special case)
                     if node.type == "type_definition":
