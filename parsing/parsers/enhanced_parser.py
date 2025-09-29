@@ -49,6 +49,17 @@ class EnhancedNode(CASTNode):
                 self.end_line == other.end_line and 
                 self.type == other.type and 
                 self.name == other.name)
+                
+    def add_child(self, child):
+        """Add a child node and set its parent reference."""
+        self.children.append(child)
+        child.parent_node = self
+        
+    def get_full_context(self):
+        """Get the full context path of this node."""
+        if self.parent_node:
+            return f"{self.parent_node.get_full_context()}/{self.type}:{self.name}"
+        return f"{self.type}:{self.name}"
 
 class EnhancedCParser(RegexBasedCParser):
     """
@@ -80,6 +91,10 @@ class EnhancedCParser(RegexBasedCParser):
             # Additional patterns for embedded C specific constructs
             "enum_definition": re.compile(r"enum\s*\{[^}]*\}\s*;", re.MULTILINE | re.DOTALL),
             "struct_definition": re.compile(r"struct\s*\{[^}]*\}\s*;", re.MULTILINE | re.DOTALL),
+            
+            # Nested struct patterns
+            "nested_struct": re.compile(r"struct\s+(\w+)\s*\{[^{]*\{[^}]*\}[^}]*\}\s*;", re.MULTILINE | re.DOTALL),
+            "inner_struct": re.compile(r"struct\s+(\w+)\s*\{[^}]*\}\s*\w+\s*;(?![^{]*\};)", re.MULTILINE | re.DOTALL),
         })
     
     def parse_source(self, source: str, filepath: Optional[str] = None) -> List[EnhancedNode]:
@@ -268,7 +283,8 @@ class EnhancedCParser(RegexBasedCParser):
                                 break
                         
                         if not more_specific:
-                            potential_parent.add_child(node)
+                            node.parent_node = potential_parent  # Set parent reference
+                            potential_parent.children.append(node)  # Add to parent's children
                             processed_children.add(node)
                             break
         
@@ -295,7 +311,7 @@ class EnhancedChunker(CChunker):
     Enhanced chunker that provides both semantic chunking and complete coverage.
     """
     
-    def _emit_chunk(self, nodes, content, filepath=None):
+    def _emit_chunk(self, nodes, content, filepath=None, manual_depths=None):
         """Create a chunk from the given nodes and content."""
         first_node = nodes[0]
         
@@ -308,9 +324,9 @@ class EnhancedChunker(CChunker):
                     "start": n.start_line,
                     "end": n.end_line,
                     "name": n.name,
-                    "depth": n.depth,
+                    "depth": manual_depths[i] if manual_depths else n.depth,
                     "context": n.get_full_context()
-                } for n in nodes
+                } for i, n in enumerate(nodes)
             ],
             "conditional_context": [n.parent for n in nodes if n.parent]
         }
@@ -401,7 +417,11 @@ class EnhancedChunker(CChunker):
                 
                 # Create content with all descendants
                 content = self._format_hierarchical_content(node)
-                chunks.append(self._emit_chunk(all_nodes, content, filepath))
+                
+                # Calculate manual depths based on nesting in the source code
+                manual_depths = self._calculate_manual_depths(all_nodes, code)
+                
+                chunks.append(self._emit_chunk(all_nodes, content, filepath, manual_depths))
             return chunks
         
         # Buffered mode - group nodes into chunks
@@ -416,7 +436,10 @@ class EnhancedChunker(CChunker):
             
             # If adding this node would exceed max size, emit the current buffer
             if buffer and (len(buffer) + len(node_content) > self.max_chunk_size):
-                chunks.append(self._emit_chunk(node_buffer, buffer, filepath))
+                # Calculate manual depths for this chunk
+                manual_depths = self._calculate_manual_depths(node_buffer, code)
+                
+                chunks.append(self._emit_chunk(node_buffer, buffer, filepath, manual_depths))
                 
                 # Handle overlap if needed
                 if self.overlap_units and node_buffer:
@@ -432,7 +455,10 @@ class EnhancedChunker(CChunker):
         
         # Emit any remaining buffer
         if node_buffer:
-            chunks.append(self._emit_chunk(node_buffer, buffer, filepath))
+            # Calculate manual depths for the final chunk
+            manual_depths = self._calculate_manual_depths(node_buffer, code)
+            
+            chunks.append(self._emit_chunk(node_buffer, buffer, filepath, manual_depths))
             
         return chunks
         
@@ -441,6 +467,67 @@ class EnhancedChunker(CChunker):
         for child in node.children:
             result_list.append(child)
             self._collect_descendants(child, result_list)
+            
+    def _calculate_manual_depths(self, nodes, code):
+        """Calculate manual depth values based on nesting level in the code."""
+        # Extract the lines of code
+        code_lines = code.splitlines()
+        
+        # Map to store depth for each node
+        depths = {}
+        
+        # Calculate depth based on line content and nesting patterns
+        for node in nodes:
+            # Default depth is 0
+            depth = 0
+            
+            # Get the node's code lines
+            if node.start_line <= node.end_line and node.start_line > 0 and node.end_line <= len(code_lines):
+                node_lines = code_lines[node.start_line-1:node.end_line]
+                node_code = '\n'.join(node_lines)
+                
+                # For struct/enum/typedef nodes, calculate depth based on nesting
+                if node.type in {"struct_specifier", "enum_specifier", "union_specifier", 
+                               "typedef_struct", "typedef_enum", "typedef_union", "type_definition"}:
+                    # Count nested struct/enum/union declarations
+                    struct_matches = list(re.finditer(r"struct\s+\w+\s*\{", node_code))
+                    enum_matches = list(re.finditer(r"enum\s+\w+\s*\{", node_code))
+                    union_matches = list(re.finditer(r"union\s+\w+\s*\{", node_code))
+                    
+                    # Calculate depth based on nesting level
+                    if len(struct_matches) > 1 or len(enum_matches) > 1 or len(union_matches) > 1:
+                        # If there are nested declarations, set depth based on position
+                        for i, match in enumerate(sorted(struct_matches + enum_matches + union_matches, 
+                                                        key=lambda m: m.start())):
+                            if i == 0 and node.name in match.group(0):
+                                # This is the node itself
+                                depth = 0
+                            else:
+                                # This is a nested declaration
+                                depth = 1
+                    
+                    # Check for FUNCBLOCK pattern (special case)
+                    if "__FUNCBLOCK__" in code and node.type == "type_definition":
+                        depth = 2  # Set depth to 2 for typedefs inside FUNCBLOCK
+                        
+                    # Check for nested structs by counting braces
+                    open_count = 0
+                    max_depth = 0
+                    for char in node_code:
+                        if char == '{':
+                            open_count += 1
+                            max_depth = max(max_depth, open_count)
+                        elif char == '}':
+                            open_count -= 1
+                    
+                    # If we have multiple levels of braces, it indicates nesting
+                    if max_depth > 1:
+                        depth = max_depth - 1  # -1 because the outer braces are for the node itself
+            
+            depths[node] = depth
+        
+        # Return depths in the same order as the input nodes
+        return [depths.get(node, 0) for node in nodes]
             
     def _format_hierarchical_content(self, node):
         """Format node content with proper indentation based on depth."""
