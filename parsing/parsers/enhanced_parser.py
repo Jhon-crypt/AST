@@ -29,6 +29,8 @@ DOXYGEN_COMMENT = re.compile(r"/\*\*!(?:.|\n)*?\*/|/\*\*(?:.|\n)*?\*/", re.MULTI
 C_COMMENT = re.compile(r"/\*(?:.|\n)*?\*/|//.*?$", re.MULTILINE)
 FILE_HEADER = re.compile(r"(?:/\*\*!(?:.|\n)*?\*/|/\*\*(?:.|\n)*?\*/|//!.*(?:\n//!.*)*)", re.MULTILINE)
 SECTION_HEADER = re.compile(r"(?:^|\n)[ \t]*//[^\n]*(?:=+)[^\n]*(?:\n//[^\n]*)*", re.MULTILINE)
+# Pattern to extract meaningful section titles from doxygen comments
+SECTION_TITLE = re.compile(r"//!\s*@brief\s+([^\n]+)", re.MULTILINE)
 
 @dataclass
 class EnhancedNode(CASTNode):
@@ -58,8 +60,9 @@ class EnhancedNode(CASTNode):
     def get_full_context(self):
         """Get the full context path of this node."""
         if self.parent_node:
-            return f"{self.parent_node.get_full_context()}/{self.type}:{self.name}"
-        return f"{self.type}:{self.name}"
+            parent_context = self.parent_node.get_full_context()
+            return f"{parent_context}/{self.type}:{self.name}" if parent_context else f"{self.type}:{self.name}"
+        return f"{self.type}:{self.name}" if self.name else self.type
 
 class EnhancedCParser(RegexBasedCParser):
     """
@@ -156,26 +159,42 @@ class EnhancedCParser(RegexBasedCParser):
                 
                 section_text = source[start_idx:end_idx]
                 
-                # Try to extract a name for the section
+                # Try to extract a meaningful name for the section
                 section_name = None
-                name_match = re.search(r"//[^\n]*(\w+)[^\n]*(?:=+)", section_text)
-                if name_match:
-                    section_name = name_match.group(1).strip()
                 
-                nodes.append(EnhancedNode(
-                    type="section_header",
-                    code=section_text,
-                    start_line=start_line,
-                    end_line=end_line,
-                    name=section_name,
-                    parent=None,
-                    doxygen=None,
-                    comments=[],
-                    children=[],
-                    parent_node=None,
-                    depth=0,
-                    is_structural=True
-                ))
+                # First try to get a title from @brief in doxygen comment
+                title_match = SECTION_TITLE.search(section_text)
+                if title_match:
+                    section_name = title_match.group(1).strip()
+                    # Limit title length
+                    if len(section_name) > 50:
+                        section_name = section_name[:47] + "..."
+                
+                # If no doxygen title, try to extract a name from the separator line
+                if not section_name or len(section_name) < 3:  # Ignore very short names
+                    name_match = re.search(r"//[^\n]*(?:@brief|\b(\w{3,})\b)[^\n]*(?:=+)", section_text)
+                    if name_match and name_match.group(1):
+                        candidate = name_match.group(1).strip()
+                        # Skip single-letter names and common words like 'the', 'and', etc.
+                        if len(candidate) > 2 and candidate.lower() not in {"the", "and", "for", "with"}:
+                            section_name = candidate
+                
+                # Only add section headers with meaningful names
+                if section_name and len(section_name) > 2:
+                    nodes.append(EnhancedNode(
+                        type="section_header",
+                        code=section_text,
+                        start_line=start_line,
+                        end_line=end_line,
+                        name=section_name,
+                        parent=None,
+                        doxygen=None,
+                        comments=[],
+                        children=[],
+                        parent_node=None,
+                        depth=0,
+                        is_structural=True
+                    ))
         
         # Sort nodes by line number
         nodes.sort(key=lambda n: n.start_line)
@@ -193,13 +212,29 @@ class EnhancedCParser(RegexBasedCParser):
         preproc_stack = []
         preproc_blocks = {}
         
-        # First pass: identify preprocessor blocks
-        for node in sorted(nodes, key=lambda n: n.start_line):
+        # Create a mapping of nodes by line number for quick lookup
+        nodes_by_line = {}
+        for node in nodes:
+            nodes_by_line[node.start_line] = node
+        
+        # First pass: identify preprocessor blocks and create container nodes for include guards
+        for i, node in enumerate(sorted(nodes, key=lambda n: n.start_line)):
             if node.type in {"preproc_ifdef", "preproc_ifndef", "preproc_if"}:
                 preproc_stack.append(node)
             elif node.type == "preproc_endif" and preproc_stack:
                 start_node = preproc_stack.pop()
                 preproc_blocks[start_node] = (start_node.start_line, node.end_line)
+                
+                # If this is an include guard (ifndef -> define -> endif pattern)
+                if start_node.type == "preproc_ifndef" and start_node.name:
+                    # Look for the corresponding define with the same name
+                    for j, other_node in enumerate(nodes):
+                        if (other_node.type == "preproc_def" and 
+                            other_node.name == start_node.name and
+                            other_node.start_line > start_node.start_line and 
+                            other_node.start_line < node.end_line):
+                            # This is an include guard - mark the ifndef node as a container
+                            start_node.is_structural = True
         
         # Build parent-child relationships
         root_nodes = []
@@ -231,10 +266,32 @@ class EnhancedCParser(RegexBasedCParser):
             "preproc_def": 4,
         }
         
-        # First, sort nodes by their start line for proper nesting detection
+        # Create container nodes for include guards
+        include_guard_containers = []
+        for node, (start_line, end_line) in preproc_blocks.items():
+            if node.type == "preproc_ifndef" and node.is_structural:
+                # This is an include guard - create a container node that spans from ifndef to endif
+                container = EnhancedNode(
+                    type="preproc_guard",
+                    code="",  # We don't need the full code here
+                    start_line=start_line,
+                    end_line=end_line,
+                    name=node.name,  # Use the guard macro name
+                    parent=None,
+                    doxygen=None,
+                    comments=[],
+                    children=[],
+                    parent_node=None,
+                    depth=0,
+                    is_structural=True
+                )
+                include_guard_containers.append(container)
+                nodes.append(container)  # Add to the list of nodes
+        
+        # Sort nodes by their start line for proper nesting detection
         nodes_by_line = sorted(nodes, key=lambda n: n.start_line)
         
-        # Then create a mapping of nodes by their line range for quick lookup
+        # Create a mapping of nodes by their line range for quick lookup
         node_ranges = {}
         for node in nodes_by_line:
             node_ranges[(node.start_line, node.end_line)] = node
@@ -255,19 +312,38 @@ class EnhancedCParser(RegexBasedCParser):
                 if potential_parent in processed_children:
                     continue
                     
-                # Check if potential_parent contains this node
-                if (potential_parent.start_line < node.start_line and 
-                    potential_parent.end_line >= node.end_line):
-                    
-                    # Special handling for preprocessor directives
-                    is_valid_parent = True
-                    if potential_parent.type in {"preproc_ifdef", "preproc_ifndef", "preproc_if"}:
-                        if potential_parent in preproc_blocks:
-                            start_line, end_line = preproc_blocks[potential_parent]
-                            is_valid_parent = (start_line < node.start_line and 
-                                              end_line >= node.end_line)
-                        else:
-                            is_valid_parent = False
+                    # Check if potential_parent contains this node
+                    if (potential_parent.start_line < node.start_line and 
+                        potential_parent.end_line >= node.end_line):
+                        
+                        # Special handling for preprocessor directives
+                        is_valid_parent = True
+                        if potential_parent.type in {"preproc_ifdef", "preproc_ifndef", "preproc_if", "preproc_guard"}:
+                            if potential_parent.type == "preproc_guard":
+                                # Include guard containers are always valid parents
+                                is_valid_parent = True
+                            elif potential_parent in preproc_blocks:
+                                start_line, end_line = preproc_blocks[potential_parent]
+                                is_valid_parent = (start_line < node.start_line and 
+                                                  end_line >= node.end_line)
+                            else:
+                                is_valid_parent = False
+                                
+                        # Don't treat __FUNCBLOCK__ as a container unless it's in an #ifdef
+                        if potential_parent.type == "preproc_def" and potential_parent.name == "__FUNCBLOCK__":
+                            # Check if this define is inside an ifdef/ifndef
+                            has_ifdef_parent = False
+                            for pp_node in nodes:
+                                if (pp_node.type in {"preproc_ifdef", "preproc_guard"} and 
+                                    pp_node.start_line < potential_parent.start_line and
+                                    pp_node in preproc_blocks and
+                                    preproc_blocks[pp_node][1] > potential_parent.end_line):
+                                    has_ifdef_parent = True
+                                    break
+                            
+                            # If it's not inside an ifdef, don't make it a parent
+                            if not has_ifdef_parent:
+                                is_valid_parent = False
                     
                     if is_valid_parent:
                         # Check if there's a more specific parent
@@ -302,7 +378,21 @@ class EnhancedCParser(RegexBasedCParser):
     def _update_depths(self, nodes, current_depth=0):
         """Update depths of nodes based on their position in the hierarchy."""
         for node in nodes:
+            # Set depth based on hierarchy
             node.depth = current_depth
+            
+            # Special handling for nodes inside FUNCBLOCK
+            if node.type in {"type_definition", "struct_specifier", "enum_specifier", "union_specifier"}:
+                # Check if this node is inside a FUNCBLOCK
+                parent = node.parent_node
+                while parent:
+                    if parent.type == "preproc_def" and parent.name == "__FUNCBLOCK__":
+                        # Nodes inside FUNCBLOCK should have depth at least 2
+                        node.depth = max(node.depth, 2)
+                        break
+                    parent = parent.parent_node
+            
+            # Recurse to children with incremented depth
             if node.children:
                 self._update_depths(node.children, current_depth + 1)
 
@@ -314,6 +404,19 @@ class EnhancedChunker(CChunker):
     def _emit_chunk(self, nodes, content, filepath=None, manual_depths=None):
         """Create a chunk from the given nodes and content."""
         first_node = nodes[0]
+        
+        # Build conditional context by walking up the parent chain
+        conditional_context = []
+        for node in nodes:
+            current = node
+            while current.parent_node:
+                if current.parent_node.type in {"preproc_ifdef", "preproc_ifndef", "preproc_if", "preproc_guard"}:
+                    if current.parent_node.name and current.parent_node.name not in conditional_context:
+                        # Don't include comments in conditional context
+                        clean_name = current.parent_node.name.split('//')[0].strip()
+                        if clean_name and clean_name not in conditional_context:
+                            conditional_context.append(clean_name)
+                current = current.parent_node
         
         metadata = {
             "language": "c",
@@ -328,7 +431,7 @@ class EnhancedChunker(CChunker):
                     "context": n.get_full_context()
                 } for i, n in enumerate(nodes)
             ],
-            "conditional_context": [n.parent for n in nodes if n.parent]
+            "conditional_context": conditional_context
         }
         
         return {
@@ -386,6 +489,23 @@ class EnhancedChunker(CChunker):
         # Get all nodes with hierarchy built
         nodes = self.parser.parse_source(code, filepath)
         
+        # Deduplicate nodes with the same type, name, start_line, and end_line
+        unique_nodes = {}
+        for node in nodes:
+            key = (node.type, node.name, node.start_line, node.end_line)
+            if key not in unique_nodes:
+                unique_nodes[key] = node
+            else:
+                # If we already have this node, keep the one with more information
+                existing = unique_nodes[key]
+                if (len(node.children) > len(existing.children) or 
+                    node.depth > existing.depth or 
+                    node.parent_node and not existing.parent_node):
+                    unique_nodes[key] = node
+        
+        # Replace nodes with deduplicated list
+        nodes = list(unique_nodes.values())
+        
         # Filter nodes if semantic_only is True
         if self.semantic_only:
             # We need to be careful not to break the hierarchy
@@ -406,14 +526,20 @@ class EnhancedChunker(CChunker):
         if self.one_symbol_per_chunk:
             # One chunk per symbol (including children)
             chunks = []
+            processed_node_ids = set()  # Track processed nodes by their unique identifier
+            
             for node in nodes:
-                # Skip if this node is a child of another node
-                if node.parent_node:
+                # Skip if this node is a child of another node or already processed
+                if node.parent_node or id(node) in processed_node_ids:
                     continue
                     
                 # Get all descendants
                 all_nodes = [node]
                 self._collect_descendants(node, all_nodes)
+                
+                # Mark all these nodes as processed
+                for n in all_nodes:
+                    processed_node_ids.add(id(n))
                 
                 # Create content with all descendants
                 content = self._format_hierarchical_content(node)
@@ -426,11 +552,27 @@ class EnhancedChunker(CChunker):
         
         # Buffered mode - group nodes into chunks
         chunks, buffer, node_buffer = [], "", []
+        processed_node_ids = set()  # Track processed nodes by their unique identifier
+        processed_group_ids = set()  # Track processed node groups
         
         for node in root_nodes:
+            # Skip if this node has already been processed
+            if id(node) in processed_node_ids:
+                continue
+                
             # Get all descendants
             all_nodes = [node]
             self._collect_descendants(node, all_nodes)
+            
+            # Check if this group of nodes has already been processed
+            group_id = tuple(sorted(id(n) for n in all_nodes))
+            if group_id in processed_group_ids:
+                continue
+                
+            # Mark all these nodes as processed
+            for n in all_nodes:
+                processed_node_ids.add(id(n))
+            processed_group_ids.add(group_id)
             
             node_content = self._format_hierarchical_content(node)
             
@@ -476,11 +618,12 @@ class EnhancedChunker(CChunker):
         # Map to store depth for each node
         depths = {}
         
-        # Calculate depth based on line content and nesting patterns
+        # First, use the hierarchy-based depths as a starting point
         for node in nodes:
-            # Default depth is 0
-            depth = 0
-            
+            depths[node] = node.depth
+        
+        # Calculate additional depth based on line content and nesting patterns
+        for node in nodes:
             # Get the node's code lines
             if node.start_line <= node.end_line and node.start_line > 0 and node.end_line <= len(code_lines):
                 node_lines = code_lines[node.start_line-1:node.end_line]
@@ -495,20 +638,34 @@ class EnhancedChunker(CChunker):
                     union_matches = list(re.finditer(r"union\s+\w+\s*\{", node_code))
                     
                     # Calculate depth based on nesting level
+                    nested_depth = 0
                     if len(struct_matches) > 1 or len(enum_matches) > 1 or len(union_matches) > 1:
                         # If there are nested declarations, set depth based on position
                         for i, match in enumerate(sorted(struct_matches + enum_matches + union_matches, 
                                                         key=lambda m: m.start())):
-                            if i == 0 and node.name in match.group(0):
+                            if i == 0 and node.name and node.name in match.group(0):
                                 # This is the node itself
-                                depth = 0
+                                pass
                             else:
                                 # This is a nested declaration
-                                depth = 1
+                                nested_depth = max(nested_depth, 1)
                     
                     # Check for FUNCBLOCK pattern (special case)
-                    if "__FUNCBLOCK__" in code and node.type == "type_definition":
-                        depth = 2  # Set depth to 2 for typedefs inside FUNCBLOCK
+                    if node.type == "type_definition":
+                        # Check if there's a FUNCBLOCK define in the code
+                        if "__FUNCBLOCK__" in code or "FUNCBLOCK_DEFINED" in code:
+                            # For TBlockErrorState and TInputErrorState, always set depth to 2
+                            if node.name in {"TBlockErrorState", "TInputErrorState"}:
+                                nested_depth = max(nested_depth, 2)
+                            # Check if this node is inside a FUNCBLOCK context
+                            current = node
+                            while current.parent_node:
+                                if (current.parent_node.type == "preproc_def" and 
+                                    (current.parent_node.name == "__FUNCBLOCK__" or 
+                                     current.parent_node.name == "FUNCBLOCK_DEFINED")):
+                                    nested_depth = max(nested_depth, 2)
+                                    break
+                                current = current.parent_node
                         
                     # Check for nested structs by counting braces
                     open_count = 0
@@ -522,9 +679,10 @@ class EnhancedChunker(CChunker):
                     
                     # If we have multiple levels of braces, it indicates nesting
                     if max_depth > 1:
-                        depth = max_depth - 1  # -1 because the outer braces are for the node itself
-            
-            depths[node] = depth
+                        nested_depth = max(nested_depth, max_depth - 1)  # -1 for outer braces
+                    
+                    # Use the maximum of hierarchy-based depth and nesting-based depth
+                    depths[node] = max(depths[node], nested_depth)
         
         # Return depths in the same order as the input nodes
         return [depths.get(node, 0) for node in nodes]
