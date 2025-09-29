@@ -122,10 +122,11 @@ class RegexBasedCParser:
     # Regex patterns for different C constructs
     PATTERNS = {
         "function_definition": re.compile(r"(?:static\s+)?(?:\w+\s+)+(\w+)\s*\([^;]*\)\s*\{", re.MULTILINE),
-        "function_declaration": re.compile(r"(?:extern\s+)?(?:\w+\s+)+(\w+)\s*\([^;]*\);", re.MULTILINE),
+        "function_declaration": re.compile(r"(?:extern\s+)?(?:\w+\s+)+([\w_]+)\s*\([^;]*\);", re.MULTILINE),
         "struct_specifier": re.compile(r"struct\s+(\w+)(?:\s*\{[^}]*\}|\s*;)", re.MULTILINE | re.DOTALL),
         "enum_specifier": re.compile(r"enum\s+(\w+)(?:\s*\{[^}]*\}|\s*;)", re.MULTILINE | re.DOTALL),
         "union_specifier": re.compile(r"union\s+(\w+)(?:\s*\{[^}]*\}|\s*;)", re.MULTILINE | re.DOTALL),
+        "enum_definition": re.compile(r"enum\s*\{[^}]*\}\s*;", re.MULTILINE | re.DOTALL),  # Regular enum without typedef
         "typedef": re.compile(r"typedef\s+(?:struct|enum|union)?\s*(?:\w+\s+)*(\w+)\s*;", re.MULTILINE),
         "macro_definition": re.compile(r"#define\s+(\w+)(?:\([^)]*\))?\s+[^\n]*", re.MULTILINE),
         "conditional_directive": re.compile(r"#if(?:def|ndef)?\s+([^\n]*)", re.MULTILINE),
@@ -254,6 +255,17 @@ class RegexBasedCParser:
             
             code = source[start_idx:end_idx]
             
+            # Extract the actual function name from the declaration
+            # This handles cases where the name might be incorrectly extracted from comments
+            # Look for function name pattern in extern declarations
+            func_name_match = re.search(r'extern\s+\w+\s+(\w+)\s*\(', code)
+            if not func_name_match:
+                # Try a more general pattern
+                func_name_match = re.search(r'[^a-zA-Z0-9_](\w+)\s*\([^;]*\);', code)
+            
+            if func_name_match:
+                name = func_name_match.group(1)
+            
             # Find associated comments
             doxygen = _find_nearest_comment(source, start_line, DOXYGEN_COMMENT, self.max_comment_gap)
             if doxygen:
@@ -344,6 +356,49 @@ class RegexBasedCParser:
                 start_line=start_line,
                 end_line=end_line,
                 name=name,
+                parent=parent,
+                doxygen=doxygen,
+                comments=comments
+            ))
+        
+        # Process regular enum definitions (not typedef enums)
+        for match in self.PATTERNS["enum_definition"].finditer(source):
+            start_idx = match.start()
+            end_idx = match.end()
+            start_line = self._find_line_number(source, start_idx)
+            end_line = self._find_line_number(source, end_idx)
+            
+            code = source[start_idx:end_idx]
+            
+            # Try to extract a name from the enum values
+            enum_name = "anonymous_enum"
+            enum_values_match = re.search(r'\{([^}]*)\}', code)
+            if enum_values_match:
+                enum_values = enum_values_match.group(1)
+                first_value_match = re.search(r'(\w+)\s*(?:=|,|$)', enum_values)
+                if first_value_match:
+                    enum_name = f"enum_with_{first_value_match.group(1)}"
+            
+            # Find associated comments
+            doxygen = _find_nearest_comment(source, start_line, DOXYGEN_COMMENT, self.max_comment_gap)
+            if doxygen:
+                doxygen = _parse_doxygen_comment(doxygen)
+            
+            comments = []
+            if self.include_comments:
+                comment = _find_nearest_comment(source, start_line, C_COMMENT, self.max_comment_gap)
+                if comment and (not doxygen or comment["raw"] != doxygen.get("raw")):
+                    comments.append(comment)
+            
+            # Find conditional context
+            parent = conditional_contexts.get(start_line)
+            
+            nodes.append(ASTNode(
+                type="enum_definition",
+                code=code,
+                start_line=start_line,
+                end_line=end_line,
+                name=enum_name,
                 parent=parent,
                 doxygen=doxygen,
                 comments=comments

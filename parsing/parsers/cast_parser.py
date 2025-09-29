@@ -491,10 +491,22 @@ class CASTChunker:
         # Parse the source into nodes
         nodes = self.parser.parse_source(code, filepath)
         
+        # Track processed nodes to avoid duplicates
+        processed_node_ids = set()
+        
         # If one symbol per chunk is requested, just return individual nodes
         if self.one_symbol_per_chunk:
             chunks = []
             for node in nodes:
+                # Generate a unique ID for this node
+                node_id = (node.start_line, node.end_line, node.type, node.name)
+                
+                # Skip if we've already processed this node
+                if node_id in processed_node_ids:
+                    continue
+                    
+                processed_node_ids.add(node_id)
+                
                 # Check if we need to split this node
                 if self._should_split_node(node):
                     split_nodes = self._split_large_node(node)
@@ -511,6 +523,15 @@ class CASTChunker:
         # Step 1: Split large nodes
         processed_nodes = []
         for node in nodes:
+            # Generate a unique ID for this node
+            node_id = (node.start_line, node.end_line, node.type, node.name)
+            
+            # Skip if we've already processed this node
+            if node_id in processed_node_ids:
+                continue
+                
+            processed_node_ids.add(node_id)
+            
             if self._should_split_node(node):
                 processed_nodes.extend(self._split_large_node(node))
             else:
@@ -521,7 +542,18 @@ class CASTChunker:
         
         # Step 3: Create chunks from groups
         chunks = []
+        processed_group_ids = set()
+        
         for group in node_groups:
+            # Generate a unique ID for this group based on its nodes
+            group_id = tuple(sorted((n.start_line, n.end_line, n.type, n.name) for n in group))
+            
+            # Skip if we've already processed this group
+            if group_id in processed_group_ids:
+                continue
+                
+            processed_group_ids.add(group_id)
+            
             # Format content for the entire group
             contents = [self._format_node_content(node) for node in group]
             combined_content = "\n\n".join(contents)
@@ -532,9 +564,14 @@ class CASTChunker:
             # Handle overlap if needed
             if self.overlap_units and len(group) > self.overlap_units:
                 overlap_group = group[-self.overlap_units:]
-                overlap_contents = [self._format_node_content(node) for node in overlap_group]
-                overlap_content = "\n\n".join(overlap_contents)
-                chunks.append(self._emit_chunk(overlap_group, overlap_content, filepath))
+                overlap_group_id = tuple(sorted((n.start_line, n.end_line, n.type, n.name) for n in overlap_group))
+                
+                # Only add overlap chunk if it's not a duplicate
+                if overlap_group_id not in processed_group_ids:
+                    processed_group_ids.add(overlap_group_id)
+                    overlap_contents = [self._format_node_content(node) for node in overlap_group]
+                    overlap_content = "\n\n".join(overlap_contents)
+                    chunks.append(self._emit_chunk(overlap_group, overlap_content, filepath))
         
         return chunks
 
