@@ -235,6 +235,14 @@ class EnhancedCParser(RegexBasedCParser):
                             other_node.start_line < node.end_line):
                             # This is an include guard - mark the ifndef node as a container
                             start_node.is_structural = True
+                            # Store the range of this include guard for later use
+                            preproc_blocks["include_guard_" + start_node.name] = (start_node.start_line, node.end_line)
+                            # Add the guard name to the parent field of all nodes in this range
+                            for k, inner_node in enumerate(nodes):
+                                if (inner_node.start_line > start_node.start_line and 
+                                    inner_node.end_line < node.end_line):
+                                    if not inner_node.parent or inner_node.parent == "":
+                                        inner_node.parent = start_node.name
         
         # Build parent-child relationships
         root_nodes = []
@@ -268,15 +276,16 @@ class EnhancedCParser(RegexBasedCParser):
         
         # Create container nodes for include guards
         include_guard_containers = []
-        for node, (start_line, end_line) in preproc_blocks.items():
-            if node.type == "preproc_ifndef" and node.is_structural:
+        for key, (start_line, end_line) in preproc_blocks.items():
+            if isinstance(key, str) and key.startswith("include_guard_"):
+                guard_name = key[len("include_guard_"):]
                 # This is an include guard - create a container node that spans from ifndef to endif
                 container = EnhancedNode(
                     type="preproc_guard",
                     code="",  # We don't need the full code here
                     start_line=start_line,
                     end_line=end_line,
-                    name=node.name,  # Use the guard macro name
+                    name=guard_name,  # Use the guard macro name
                     parent=None,
                     doxygen=None,
                     comments=[],
@@ -407,6 +416,19 @@ class EnhancedChunker(CChunker):
         
         # Build conditional context by walking up the parent chain
         conditional_context = []
+        
+        # First check for include guards in the file
+        include_guards = [n for n in nodes if n.type == "preproc_guard"]
+        for guard in include_guards:
+            if guard.name and guard.name not in conditional_context:
+                conditional_context.append(guard.name)
+        
+        # Then check for parent fields set by include guards
+        for node in nodes:
+            if node.parent and node.parent not in conditional_context:
+                conditional_context.append(node.parent)
+        
+        # Then walk up the parent chain for each node
         for node in nodes:
             current = node
             while current.parent_node:
