@@ -188,7 +188,7 @@ class EnhancedCParser(RegexBasedCParser):
         
         # Build parent-child relationships
         root_nodes = []
-        processed_nodes = set()
+        processed_children = set()
         
         # Process nodes in order of hierarchy level
         node_hierarchy = {
@@ -203,67 +203,92 @@ class EnhancedCParser(RegexBasedCParser):
             "file_header": 0,
             "section_header": 1,
             # Type definitions and specifiers
-            "type_definition": 2,
-            "struct_specifier": 2,
-            "enum_specifier": 2,
-            "union_specifier": 2,
+            "type_definition": 1,
+            "struct_specifier": 1,
+            "enum_specifier": 1,
+            "union_specifier": 1,
             # Function definitions
-            "function_definition": 3,
+            "function_definition": 2,
             # Variable declarations
-            "declaration": 4,
+            "declaration": 3,
             # Preprocessor macros
-            "preproc_function_def": 5,
-            "preproc_def": 5,
+            "preproc_function_def": 4,
+            "preproc_def": 4,
         }
         
-        # Sort by hierarchy level first, then by line number
-        sorted_nodes = sorted(nodes, key=lambda n: (node_hierarchy.get(n.type, 99), n.start_line))
+        # First, sort nodes by their start line for proper nesting detection
+        nodes_by_line = sorted(nodes, key=lambda n: n.start_line)
         
-        for node in sorted_nodes:
-            if node in processed_nodes:
+        # Then create a mapping of nodes by their line range for quick lookup
+        node_ranges = {}
+        for node in nodes_by_line:
+            node_ranges[(node.start_line, node.end_line)] = node
+        
+        # Process nodes from outside in (largest ranges first)
+        # This ensures proper nesting of nodes
+        nodes_by_range = sorted(nodes_by_line, 
+                               key=lambda n: (n.start_line, -n.end_line))
+        
+        # First pass: establish parent-child relationships based on line ranges
+        for i, node in enumerate(nodes_by_range):
+            if node in processed_children:
                 continue
                 
-            processed_nodes.add(node)
-            
-            # Find potential parent
-            parent = None
-            parent_found = False
-            
-            for potential_parent in sorted_nodes:
-                if potential_parent == node or potential_parent in processed_nodes:
+            # Find potential parent (node that contains this node)
+            for potential_parent in nodes_by_range[:i]:  # Only check nodes processed before this one
+                # Skip if already processed as child
+                if potential_parent in processed_children:
                     continue
                     
                 # Check if potential_parent contains this node
-                parent_contains_node = False
-                
-                # Special handling for preprocessor directives
-                if potential_parent.type in {"preproc_ifdef", "preproc_ifndef", "preproc_if"} and potential_parent in preproc_blocks:
-                    start_line, end_line = preproc_blocks[potential_parent]
-                    if start_line < node.start_line and end_line >= node.end_line:
-                        parent_contains_node = True
-                else:
-                    # Regular containment check
-                    if (potential_parent.start_line < node.start_line and 
-                        potential_parent.end_line >= node.end_line):
-                        parent_contains_node = True
-                
-                if parent_contains_node:
-                    # Find the closest parent
-                    if not parent_found or (
-                        node.parent_node and
-                        parent.start_line > node.parent_node.start_line and
-                        parent.end_line <= node.parent_node.end_line
-                    ):
-                        parent = potential_parent
-                        parent_found = True
-            
-            if parent_found:
-                parent.add_child(node)
-            else:
+                if (potential_parent.start_line < node.start_line and 
+                    potential_parent.end_line >= node.end_line):
+                    
+                    # Special handling for preprocessor directives
+                    is_valid_parent = True
+                    if potential_parent.type in {"preproc_ifdef", "preproc_ifndef", "preproc_if"}:
+                        if potential_parent in preproc_blocks:
+                            start_line, end_line = preproc_blocks[potential_parent]
+                            is_valid_parent = (start_line < node.start_line and 
+                                              end_line >= node.end_line)
+                        else:
+                            is_valid_parent = False
+                    
+                    if is_valid_parent:
+                        # Check if there's a more specific parent
+                        more_specific = False
+                        for other_parent in nodes_by_range[:i]:
+                            if (other_parent != potential_parent and 
+                                other_parent not in processed_children and
+                                potential_parent.start_line < other_parent.start_line and
+                                potential_parent.end_line >= other_parent.end_line and
+                                other_parent.start_line < node.start_line and
+                                other_parent.end_line >= node.end_line):
+                                more_specific = True
+                                break
+                        
+                        if not more_specific:
+                            potential_parent.add_child(node)
+                            processed_children.add(node)
+                            break
+        
+        # Second pass: identify root nodes (nodes without parents)
+        for node in nodes:
+            if node not in processed_children:
                 root_nodes.append(node)
+        
+        # Update depths based on hierarchy
+        self._update_depths(root_nodes)
         
         # Return only root nodes, children are accessible through the hierarchy
         return sorted(root_nodes, key=lambda n: n.start_line)
+    
+    def _update_depths(self, nodes, current_depth=0):
+        """Update depths of nodes based on their position in the hierarchy."""
+        for node in nodes:
+            node.depth = current_depth
+            if node.children:
+                self._update_depths(node.children, current_depth + 1)
 
 class EnhancedChunker(CChunker):
     """
@@ -342,25 +367,52 @@ class EnhancedChunker(CChunker):
         Returns:
             List of chunks, each containing content and metadata
         """
+        # Get all nodes with hierarchy built
         nodes = self.parser.parse_source(code, filepath)
         
         # Filter nodes if semantic_only is True
         if self.semantic_only:
-            nodes = [n for n in nodes if n.type in self.semantic_types]
+            # We need to be careful not to break the hierarchy
+            # First, identify nodes to keep
+            keep_nodes = set(n for n in nodes if n.type in self.semantic_types)
+            # Then add all parents to ensure hierarchy is preserved
+            for node in list(keep_nodes):
+                parent = node.parent_node
+                while parent:
+                    keep_nodes.add(parent)
+                    parent = parent.parent_node
+            # Filter nodes
+            nodes = [n for n in nodes if n in keep_nodes]
+        
+        # Get root nodes only (children are accessible through hierarchy)
+        root_nodes = [n for n in nodes if not n.parent_node]
         
         if self.one_symbol_per_chunk:
-            # One chunk per symbol
+            # One chunk per symbol (including children)
             chunks = []
             for node in nodes:
-                content = self._format_node_content(node)
-                chunks.append(self._emit_chunk([node], content, filepath))
+                # Skip if this node is a child of another node
+                if node.parent_node:
+                    continue
+                    
+                # Get all descendants
+                all_nodes = [node]
+                self._collect_descendants(node, all_nodes)
+                
+                # Create content with all descendants
+                content = self._format_hierarchical_content(node)
+                chunks.append(self._emit_chunk(all_nodes, content, filepath))
             return chunks
         
         # Buffered mode - group nodes into chunks
         chunks, buffer, node_buffer = [], "", []
         
-        for node in nodes:
-            node_content = self._format_node_content(node)
+        for node in root_nodes:
+            # Get all descendants
+            all_nodes = [node]
+            self._collect_descendants(node, all_nodes)
+            
+            node_content = self._format_hierarchical_content(node)
             
             # If adding this node would exceed max size, emit the current buffer
             if buffer and (len(buffer) + len(node_content) > self.max_chunk_size):
@@ -369,13 +421,13 @@ class EnhancedChunker(CChunker):
                 # Handle overlap if needed
                 if self.overlap_units and node_buffer:
                     keep = node_buffer[-self.overlap_units:]
-                    buffer = "\n\n".join(self._format_node_content(n) for n in keep)
+                    buffer = "\n\n".join(self._format_hierarchical_content(n) for n in keep)
                     node_buffer = keep
                 else:
                     buffer, node_buffer = "", []
             
-            # Add the node to the buffer
-            node_buffer.append(node)
+            # Add the node and its descendants to the buffer
+            node_buffer.extend(all_nodes)
             buffer = (buffer + "\n\n" + node_content) if buffer else node_content
         
         # Emit any remaining buffer
@@ -383,6 +435,29 @@ class EnhancedChunker(CChunker):
             chunks.append(self._emit_chunk(node_buffer, buffer, filepath))
             
         return chunks
+        
+    def _collect_descendants(self, node, result_list):
+        """Collect all descendants of a node into the result list."""
+        for child in node.children:
+            result_list.append(child)
+            self._collect_descendants(child, result_list)
+            
+    def _format_hierarchical_content(self, node):
+        """Format node content with proper indentation based on depth."""
+        content = []
+        self._format_node_recursive(node, content, 0)
+        return "\n".join(content)
+        
+    def _format_node_recursive(self, node, content_list, indent_level):
+        """Recursively format node and its children with indentation."""
+        # Add this node's content with indentation
+        node_lines = self._format_node_content(node).split('\n')
+        content_list.extend([' ' * (indent_level * 2) + line for line in node_lines])
+        
+        # Add children with increased indentation
+        for child in node.children:
+            content_list.append('')  # Empty line for separation
+            self._format_node_recursive(child, content_list, indent_level + 1)
 
 def main():
     """Command-line interface for the enhanced chunker."""
